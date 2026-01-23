@@ -574,7 +574,7 @@ wheels = [
 
 [[package]]
 name = "pydoc-mintlify"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "pydoc-markdown" },
@@ -585,7 +585,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pydoc-markdown", specifier = ">=4.8.2" },
-    { name = "typer", specifier = ">=0.20.0" },
+    { name = "typer", specifier = ">=0.14.0" },
     { name = "watchfiles", specifier = ">=1.1.1" },
 ]
 
