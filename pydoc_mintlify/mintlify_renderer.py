@@ -8,14 +8,31 @@ import typing as t
 from pathlib import Path
 
 import docspec
+from nr.util.git import Git
 import typing_extensions as te
 import yaml
 from databind.core import DeserializeAs
 from pydoc_markdown.contrib.renderers.markdown import MarkdownRenderer
-from pydoc_markdown.interfaces import Context, Renderer
+from pydoc_markdown.interfaces import Context, Renderer, SourceLinker
+from pydoc_markdown.contrib.source_linkers.git import GithubSourceLinker
 
 logger = logging.getLogger(__name__)
 
+
+def get_uom_source_linker() -> t.Optional[SourceLinker]:
+    return GithubSourceLinker(repo="corovcam/Universal-Object-Mapping", use_branch=True)
+
+
+def build_github_url(context: Context, filename: str) -> str:
+    git = Git(context.directory)
+
+    project_root = git.get_toplevel()
+    if not project_root:
+        raise RuntimeError(f'Path "%s" is not in a Git repository', context.directory)
+    
+    rel_path = Path(filename).relative_to(project_root)
+    
+    return f"https://github.com/corovcam/Universal-Object-Mapping/tree/main/{rel_path}"
 
 @dataclasses.dataclass
 class CustomizedMarkdownRenderer(MarkdownRenderer):
@@ -31,6 +48,20 @@ class CustomizedMarkdownRenderer(MarkdownRenderer):
     render_module_header_template: str = (
         "---\nsidebar_label: {relative_module_name}\ntitle: {module_name}\n---\n\n"
     )
+    
+    descriptive_module_title: bool = True
+    
+    add_method_class_prefix: bool = True
+    
+    add_member_class_prefix: bool = True
+    
+    add_full_prefix: bool = True
+    
+    sub_prefix: bool = True
+    
+    render_typehint_in_data_header: bool = True
+    
+    source_format: str = "[<span className='flex items-center gap-1'><Icon icon='external-link' />View Source</span>]({url})"
 
 
 @dataclasses.dataclass
@@ -46,13 +77,15 @@ class MintlifyRenderer(Renderer):
     #: The #MarkdownRenderer configuration.
     markdown: te.Annotated[
         MarkdownRenderer, DeserializeAs(CustomizedMarkdownRenderer)
-    ] = dataclasses.field(default_factory=CustomizedMarkdownRenderer)
+    ] = dataclasses.field(default_factory=lambda: CustomizedMarkdownRenderer(source_linker=GithubSourceLinker(repo="corovcam/Universal-Object-Mapping", use_branch=True)))
 
     #: The path where the Mintlify docs content is. Defaults to "docs" folder.
     docs_base_path: str = "docs"
 
     #: The navigation tab to insert/replace in docs.json.
     nav: t.Dict[str, t.Any] = dataclasses.field(default_factory=dict)
+    
+    context: t.Optional[Context] = None
 
     def init(self, context: Context) -> None:
         """Initialize the underlying Markdown renderer.
@@ -60,6 +93,7 @@ class MintlifyRenderer(Renderer):
         Args:
             context: Pydoc-Markdown context.
         """
+        self.context = context
         self.markdown.init(context)
         self.pages = _collect_pages(self.nav)
 
@@ -87,7 +121,7 @@ class MintlifyRenderer(Renderer):
 
             module_parts = module.name.split(".")
             if module.location.filename.endswith("__init__.py"):
-                module_parts.append("__init__")
+                module_parts.append("index")
 
             relative_module_tree = module_tree
             intermediary_module = []
@@ -112,11 +146,14 @@ class MintlifyRenderer(Renderer):
 
             mintlify_path = str(filepath.relative_to(output_root).with_suffix(""))
 
+            assert self.context is not None, "Context must be set before rendering"
             with filepath.open("w", encoding=self.markdown.encoding) as fp:
                 logger.info("Render file %s", filepath)
                 # Minimal frontmatter
                 frontmatter: t.Dict[str, t.Any] = self.pages.get(mintlify_path, {})
                 frontmatter.pop("path", None)
+                frontmatter["title"] = frontmatter.get("title", module.name.split(".")[-1])
+                frontmatter["description"] = frontmatter.get("description", "") + f'[<span className="flex items-center gap-1"><Icon icon="external-link"/>View Source</span>]({build_github_url(self.context, module.location.filename)})' if module.location and module.location.filename else ""
 
                 # Write YAML frontmatter header.
                 fp.write("---\n")
@@ -202,10 +239,12 @@ class MintlifyRenderer(Renderer):
                 if isinstance(group, dict):
                     group_label = group.get("group")
                     pages = group.get("pages", [])
+                    root = {"root": f"{prefix}/{group.get("root")}"} if group.get("root") else {}
                     if isinstance(pages, list):
                         groups_out.append(
                             {
                                 "group": group_label,
+                                **root,
                                 "pages": transform_entries(pages),
                             }
                         )
@@ -260,6 +299,8 @@ def _collect_pages(nav: str | t.Dict[str, t.Any]) -> t.List[dict]:
                 result |= _collect_pages(group)
         case {"path": path} as page:
             result[path] = page.copy()
+        case {"root": path_str} as page:
+            result["root"] = path_str
         case _:
             raise ValueError(f"Invalid page entry: {nav}")
     return result
